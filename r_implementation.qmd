@@ -1,0 +1,550 @@
+---
+title: 'R Implementation'
+author: "Ho Wong"
+date: '`r lubridate::today()`'
+format: 
+  html: 
+    embed-resources: true
+    toc: true 
+    toc_depth: 4
+editor_options: 
+  chunk_output_type: console
+---
+
+## Overview
+
+Your task is to build the best performing prediction model you can. You will be predicting a binary outcome from any or all of your available predictor variables. You may consider as many or few model configurations as you wish, and you may vary as many or as few characteristics (e.g., statistical algorithms, features/feature sets, hyperparameters, etc.) of these configurations as you wish. Remember to explain all your choices and decision-making processes to me, your collaborator.
+
+You will build a prediction model using the airline passenger satisfaction dataset, which provides a binary rating of whether a customer was satisfied with their airline experience or not as well as ~20 predictor variables. These predictor variables include customer characteristics (e.g., age), customer ratings of certain components of their airline experience (e.g., inflight WiFi), and flight characteristics (e.g., departure time delay).
+
+## Setup
+
+### Load required packages
+```{r}
+#| warning: false
+library(tidyverse)
+library(tidymodels)
+library(xfun, include.only = "cache_rds")
+```
+
+I first loaded in the relevant packages: `tidyverse` for data manipulation, `tidymodels` for ML, and `cache_rds` from the `xfun` package for caching model configurations to make my life easier.
+
+### Source function scripts
+```{r}
+#| message: false
+#| warning: false
+devtools::source_url("https://github.com/jjcurtin/lab_support/blob/main/fun_eda.R?raw=true")
+devtools::source_url("https://github.com/jjcurtin/lab_support/blob/main/fun_plots.R?raw=true")
+```
+
+Then, I sourced some of my professor John Curtin's scripts to assist me with the EDA process.
+
+### Specify other global settings
+```{r}
+rerun_setting <- FALSE
+cl <- parallel::makePSOCKcluster(parallel::detectCores(logical = FALSE))
+doParallel::registerDoParallel(cl)
+```
+
+Following that, I specified other global settings to help me with caching and parallel processing later on.
+
+### Paths
+```{r}
+path_data <- "/Users/Mac/Documents/GitHub/airline_satisfaction_r_vs_python"
+```
+
+I ended the setup by defining the path to the data directory.
+
+## Part 1. EDA
+
+### Loading the Data
+```{r}
+d <- read_csv(here::here(path_data, 'airline_passenger_satisfaction.csv'), show_col_types = F) |> 
+  janitor::clean_names()
+
+skimr::skim_without_charts(d)
+```
+
+I loaded the airline passenger satisfaction dataset and cleaned column names for consistency. Judging from the output from the `skim` function, it looks like everything in named in the correct format, and the values make sense.
+
+### Re-Classing Variable 
+```{r}
+# Initial check
+sapply(d, class)
+
+# Character columns
+d |> select(where(is.character)) |> names()
+d |> select(where(is.character)) |> map(unique)
+d <- d |> mutate(across(where(is.character), factor))
+
+# Suspicious numeric columns
+d |> select(inflight_wifi_service:cleanliness) |> map(unique, na.rm=TRUE)
+d <- d |> mutate(across(inflight_wifi_service:cleanliness, factor))
+
+# Second check
+sapply(d, class)
+```
+
+I began by checking variable classes and re-classing them appropriately. First, I selected all columns that were characters (`gender`, `customer_type`, `type_of_travel`, `customer_class`, and `satisfaction`), checked their unique values to make sure that they are actually categorical variables, and turned them into factors. Then, I moved on to some suspicious columns that were labeled numeric, but were actually categorical - Since numeric columns such as `inflight_wifi_service` are customer ratings of certain components of their airline experience, there is an inherent hierarchy within the numbers, meaning that we should treat them as categorical variables as well.
+
+What seemed weird was that some questions would contain rows with a value of 0, while the values in the other columns only range from 1 to 5. Perhaps this indicates a "I didn't use this service" option. I decided to keep the 0s.
+
+### Dealing with Missing Data
+```{r}
+colSums(is.na(d))
+```
+
+I then moved on to dealing with the missing data revealed by us skimming the dataset. This is important as our model will perform poorly if the missing data obscures significant patterns/relationships. Additionally, if we do not address the missing data, our model coefficients and standard errors will be biased in unpredictable ways. Lastly, by examining the missingness, we would be able to figure out the best way to impute them. I found that:
+
+- The missing cases in `gender` is (117/600) * 100 = 19.5% of the entire 600 observations.
+- The missing cases in `customer_class` is (5/600) * 100 = 0.83% of the entire 600 observations.
+- The missing cases in `online_boarding` is (41/600) * 100 = 6.83% of the entire 600 observations.
+- The missing cases in `onboard_service` is (22/600) * 100 = 3.67% of the entire 600 observations.
+- The missing cases in `departure_delay_in_minutes` is (3/600) * 100 = 0.5% of the entire 600 observations.
+- The missing cases in `arrival_delay_in_minutes` is (5/600) * 100 = 0.83% of the entire 600 observations.
+
+This gave me insight into how I will address missingness in my recipe. More specifically:
+
+- For `gender`, if we drop the missing values, we will lose almost 20% of our data, which is not ideal. If we impute with mode, we risk introducing bias to the model and "incorrectly" skew the distribution. For this reason, I've decided to impute with a new category, "Unknown".
+- For `customer_class`, since it's categorical and is only missing a few observations, we can impute the missing data with the mode.
+- For `online_boarding` and `onboard_service`, since they are categorical and are missing a moderate amount, I've decided to play it safe and use `step_impute_knn`.
+- For `departure_delay_in_minutes` and `arrival_delay_in_minutes`, since they are numerical and are only missing a few observations, we can impute the missing data with the median, as it is more robust than mean.
+
+### Categorical Variable Levels
+```{r}
+lapply(d, levels)
+
+d <- d |> 
+  mutate(
+    gender = factor(gender, levels = c("Female", "Male")),
+    customer_type = factor(customer_type, levels = c("disloyal Customer", "Loyal Customer")),,
+    type_of_travel = factor(type_of_travel, levels = c("Business travel", "Personal Travel")),
+    customer_class = factor(customer_class, levels = c("Business", "Eco", "Eco Plus")),
+    inflight_wifi_service = factor(inflight_wifi_service, levels = c("0", "1", "2", "3", "4", "5")),
+    departure_arrival_time_convenient = factor(departure_arrival_time_convenient, levels = c("0", "1", "2", "3", "4", "5")),
+    ease_of_online_booking = factor(ease_of_online_booking, levels = c("0", "1", "2", "3", "4", "5")),
+    gate_location = factor(gate_location, levels = c("1", "2", "3", "4", "5")),
+    food_and_drink = factor(food_and_drink, levels = c("1", "2", "3", "4", "5")),
+    online_boarding = factor(online_boarding, levels = c("0", "1", "2", "3", "4", "5")),
+    seat_comfort = factor(seat_comfort, levels = c("1", "2", "3", "4", "5")),
+    inflight_entertainment = factor(inflight_entertainment, levels = c("1", "2", "3", "4", "5")),
+    onboard_service = factor(onboard_service, levels = c("1", "2", "3", "4", "5")),
+    leg_room_service = factor(leg_room_service, levels = c("0", "1", "2", "3", "4", "5")),
+    baggage_handling = factor(baggage_handling, levels = c("1", "2", "3", "4", "5")),
+    checkin_service = factor(checkin_service, levels = c("1", "2", "3", "4", "5")),
+    inflight_service = factor(inflight_service, levels = c("1", "2", "3", "4", "5")),
+    cleanliness = factor(cleanliness, levels = c("1", "2", "3", "4", "5")),
+    satisfaction = factor(satisfaction, levels = c("neutral or dissatisfied", "satisfied"))
+  )
+```
+
+I then made sure that all categorical variables have their levels set to prevent potential issues with the default ordering by R.
+
+### Generate a Train/Test Split + Saving Cleaned Files
+```{r}
+# Generating a split and test set
+set.seed(12345)
+splits_test <- initial_split(d, prop = 0.75, strata = "satisfaction")
+data_train_val <- splits_test |> analysis()
+data_test <- splits_test |> assessment()
+
+# Saving it locally
+data_test |> glimpse() |> write_csv(here::here(path_data, "data_test.csv"))
+
+# Generating another split for train and validation set
+splits_val <- initial_split(data_train_val, prop = 0.8, strata = "satisfaction")
+data_trn <- splits_val |> analysis()
+data_val <- splits_val |> assessment()
+
+# Saving them locally
+data_trn |> glimpse() |> write_csv(here::here(path_data, "data_trn.csv"))
+data_val |> glimpse() |> write_csv(here::here(path_data, "data_val.csv"))
+```
+
+I created a nested validation structure by first splitting the data into train+validation (75%) and test (25%) sets. I then split the train+validation set further into training (80%) and validation (20%) sets. All splits were stratified on the "satisfaction" variable to ensure balanced class distributions across all splits. This should allow me to select the best model configurations (based on their performance in the validation set) while preserving a completely untouched test set for final evaluation of the best model configuration.
+
+```{r}
+set.seed(12345)
+splits_boot <- bootstraps(data_trn, times = 100, strata = "satisfaction")
+```
+
+For tuning hyperparameters, I created 100 bootstrap samples of the training data, again using stratification to maintain class balance. I set the seed to 12345 for replication.
+
+I chose bootstraps as this method of resampling provides very reliable performance estimates of models with different hyperparameters. Furthermore, it helps reduce model variance by averaging over many models trained on slightly different versions of the data, which should help reduce any instability caused by noises in the dataset.
+
+```{r}
+table(data_trn$satisfaction)
+```
+
+I did this step to determine what performance metric to use for selecting the model configurations. As seen above, the minority class makes up for ~33% of the dataset. While this does not meet the criteria for unbalanced data (minority class observations ≤ 20% of dataset), I still want to be a bit careful in using accuracy as the performance metric, because: 
+
+1) Simply predicting "satisfied" would lead to a 67% accuracy.
+2) The cost of false positive (saying a custumer is satisfied when they're not) and false negative (saying a customer is dissatisfied when they are) is not the same. 
+
+Therefore, I decided to move away from accuracy and use auROC as the primary performance metric for selecting model configurations - Instead of simply measuring the proportion of correct predictions, auROC provides a more nuanced perspective and evaluates the model's ability to rank positive predictions higher than negative ones (average sensitivity) across all decision thresholds.
+
+That being said, when fitting my models, I still want to include performance metrics such as accuracy, precision, recall, and f-measure. By doing this, I hope to gain insight into the decision threshold, which should help complement my auROC.
+
+## Part 2. Creating and Selecting Best Model Configurations
+
+### Model Config #1 - KNN
+```{r}
+rec_knn <- recipe(satisfaction ~ ., data_trn) |>
+  step_rm(id) |>
+  step_mutate(gender = factor(ifelse(is.na(gender), "Unknown", as.character(gender)))) |>
+  step_impute_mode(customer_class) |>
+  step_impute_knn(online_boarding, onboard_service, neighbors = 5) |>
+  step_impute_median(all_of(c("departure_delay_in_minutes", "arrival_delay_in_minutes"))) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_zv(all_predictors()) |>
+  step_normalize(all_numeric_predictors())
+```
+
+For my first model configuration, I chose KNN as my algorithm, as it is simple and non-parametric, meaning that it would adapt to complex, non-linear decision boundaries. I created a preprocessing recipe for KNN that:
+
+- Removes the non-predictive variable `id`
+- Handles missing values according to my aforementioned strategies
+- Creates dummy variables for categorical predictors
+- Removes zero-variance predictors, and...
+- Normalizes numeric predictors
+
+These steps are essential for a KNN model, as it is sensitive to variable scales.
+
+```{r}
+knn_grid <- expand.grid(neighbors = seq(1, 50, by = 2))
+knn_grid
+```
+
+For the hyperparameter tuning grid, I decided to choose neighbors ranging from 1 (more stable) to 50 (more flexible).
+
+```{r}
+fits_knn <- cache_rds(
+  expr = {
+    tune_grid(
+      object = nearest_neighbor(
+        neighbors = tune(),
+        weight_func = "optimal"
+      ) |>
+        set_engine("kknn") |>
+        set_mode("classification"),
+      preprocessor = rec_knn,
+      resamples = splits_boot,
+      grid = knn_grid,
+      metrics = metric_set(accuracy, precision, recall, f_meas, roc_auc)
+    )
+  },
+  dir = "/Users/Mac/Documents/GitHub/airline_satisfaction_r_vs_python/cache/",
+  file = "fits_knn",
+  rerun = rerun_setting
+)
+
+beepr::beep()
+```
+
+I performed hyperparameter tuning for the KNN model using bootstrap resampling and cached the results. The tuning process evaluated all hyperparameter combinations on each bootstrap sample to identify optimal settings based on multiple performance metrics. I used `beepr` to notify me when the models have finished fitting.
+
+```{r}
+autoplot(fits_knn)
+
+show_best(fits_knn, metric = "accuracy")
+show_best(fits_knn, metric = "f_meas")
+show_best(fits_knn, metric = "roc_auc")
+```
+
+Time to collect the performance metrics. I used `autoplots` to complement the output from the `show_best()` commands. Out of all my KNN model configurations, here are the best performance metrics:
+
+- Accuracy = 0.800 ± 0.003
+- F Measure = 0.665 ± 0.005
+- **auROC = 0.881 ± 0.003**
+
+```{r}
+knn_best_params <- select_best(fits_knn, metric = "roc_auc")
+
+rec_prep1 <- rec_knn |> prep(data_trn)
+feat_trn1 <- rec_prep1 |> bake(data_trn)
+
+fit_knn <- fit(
+  object = nearest_neighbor(
+    neighbors = knn_best_params$neighbors,
+    weight_func = "optimal"
+  ) |>
+    set_engine("kknn") |>
+    set_mode("classification"),
+  formula = satisfaction ~ .,
+  data = feat_trn1
+)
+```
+
+I selected the best KNN hyperparameters based on ROC AUC, prepared the preprocessing recipe on the training data, and fit the final KNN model. 
+
+### Model Config #2 - Log
+```{r}
+rec_log <- recipe(satisfaction ~ ., data_trn) |>
+  step_rm(id) |>
+  step_mutate(gender = factor(ifelse(is.na(gender), "Unknown", as.character(gender)))) |>
+  step_impute_mode(customer_class) |>
+  step_impute_knn(online_boarding, onboard_service, neighbors = 5) |>
+  step_impute_median(all_of(c("departure_delay_in_minutes", "arrival_delay_in_minutes"))) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_zv(all_predictors()) |>
+  step_normalize(all_numeric_predictors())
+```
+
+For my second model configuration, I chose logistic regression as my algorithm, as it is simple, interpretable, and effective for binary classification problems. Logistic regressions give us probabilities, making it easy to comprehend. Furthermore, its coefficients can be directly interpreted to feature importance. I created a preprocessing recipe for logistic regression that:
+
+- Removes the non-predictive variable `id`
+- Handles missing values according to my aforementioned strategies
+- Creates dummy variables for categorical predictors
+- Removes zero-variance predictors, and...
+- Normalizes numeric predictors
+
+These steps are crucial for logistic regression, as it can be sensitive to feature scaling and missing data.
+
+```{r}
+grid_glmnet <- expand_grid(penalty = exp(seq(-1, 7, length.out = 20)),
+                           mixture = seq(0, 1, length.out = 6))
+```
+
+I defined a grid of regularization parameters for both penalty strength and regularization type (L2 to L1). This should allow us to find the optimal level of penalty strength and the appropriate type of regularization to reduce model variance.
+
+```{r}
+fits_log <- cache_rds(
+  expr = {
+    tune_grid(
+      object = logistic_reg(penalty = tune(), mixture = tune()) |>
+        set_engine("glmnet") |>
+        set_mode("classification"),
+      preprocessor = rec_log,
+      resamples = splits_boot,
+      grid = grid_glmnet,
+      metrics = metric_set(accuracy, roc_auc, precision, recall, f_meas)
+    )
+  },
+  dir = "/Users/Mac/Documents/GitHub/airline_satisfaction_r_vs_python/cache/",
+  file = "fits_log",
+  rerun = rerun_setting
+)
+
+beepr::beep()
+```
+
+I performed hyperparameter tuning for the logistic model using bootstrap resampling and cached the results. The tuning process evaluated all hyperparameter combinations on each bootstrap sample to identify optimal settings based on multiple performance metrics. I used `beepr` to notify me when the models have finished fitting.
+
+```{r}
+autoplot(fits_log)
+
+show_best(fits_log, metric = "accuracy")
+show_best(fits_log, metric = "f_meas")
+show_best(fits_log, metric = "roc_auc")
+```
+
+Time to collect the performance metrics. I used autoplots to complement the output from the `show_best()` commands. Out of all my logistic model configurations, here are the best performance metrics:
+
+- Accuracy = 0.824 ± 0.003
+- F Measure = 0.692 ± 0.006
+- **auROC = 0.902 ± 0.003**
+
+This seems like an improvement from KNN!
+
+```{r}
+log_best_params <- select_best(fits_log, metric = "roc_auc")
+
+rec_prep2 <- rec_log |> prep(data_trn)
+feat_trn2 <- rec_prep2 |> bake(data_trn)
+
+fit_log <- logistic_reg(penalty = log_best_params$penalty,
+                              mixture = log_best_params$mixture) |> 
+  set_engine("glmnet") |> 
+  set_mode("classification") |> 
+  fit(satisfaction ~ ., data = feat_trn2)
+```
+
+I selected the best logistic hyperparameters based on ROC AUC, prepared the preprocessing recipe on the training data, and fit the final log model. 
+
+### Model Config #3 - Random Forest
+```{r}
+rec_rf <- recipe(satisfaction ~ ., data_trn) |>
+  step_rm(id) |>
+  step_mutate(gender = factor(ifelse(is.na(gender), "Unknown", as.character(gender)))) |>
+  step_impute_mode(customer_class) |>
+  step_impute_knn(online_boarding, onboard_service, neighbors = 5) |>
+  step_impute_median(all_of(c("departure_delay_in_minutes", "arrival_delay_in_minutes"))) |>
+  step_zv(all_predictors()) |>
+  step_novel(all_nominal_predictors()) |>
+  step_unknown(all_nominal_predictors())
+```
+
+For my third and last model configuration, I chose random forest (RF) as my algorithm, as it is an ensemble method that can capture complex, non-linear relationships between the features and the outcome. Random forest is robust to overfitting and performs well with large datasets and a mix of numerical and categorical predictors. It also provides feature importance, which is helpful for understanding the relative impact of each feature. I created a preprocessing recipe for random forest that:
+
+- Removes the non-predictive variable id
+- Handles missing values by imputing the mode for categorical variables and using k-nearest neighbors for specific predictors
+- Imputes the median for numeric predictors with missing values
+- Removes zero-variance predictors
+- Handles new or unknown categories in categorical predictors with the step_novel and step_unknown steps
+
+These steps are important for random forest because while the model can handle a variety of feature types, I want to make sure that the data is clean and structured properly for the model's needs.
+
+```{r}
+grid_rf <- expand_grid(mtry = c(1, 2, 5, 10, 20, 22), 
+                       min_n = c(1, 2, 5, 10, 20, 25))
+```
+
+I defined a grid for random forest hyperparameters covering a range of values for mtry (number of features considered per split) and min_n (minimum number of observations in a node).
+
+```{r}
+fits_rf <- cache_rds(
+  expr = {
+    tune_grid(
+      object = rand_forest(
+        trees = 100,
+        mtry = tune(),
+        min_n = tune()
+      ) |>
+        set_engine(
+          "ranger",
+          respect.unordered.factors = "order",
+          oob.error = FALSE,
+          seed = 12345
+        ) |>
+        set_mode("classification"),
+      preprocessor = rec_rf,
+      resamples = splits_boot,
+      grid = grid_rf,
+      metrics = metric_set(accuracy, roc_auc, precision, recall, f_meas)
+    )
+  },
+  dir = "/Users/Mac/Documents/GitHub/airline_satisfaction_r_vs_python/cache/",
+  file = "fits_rf",
+  rerun = rerun_setting
+)
+
+beepr::beep()
+```
+
+I performed hyperparameter tuning for the RF model using bootstrap resampling and cached the results. The tuning process evaluated all hyperparameter combinations on each bootstrap sample to identify optimal settings based on multiple performance metrics. I used `beepr` to notify me when the models have finished fitting.
+
+```{r}
+autoplot(fits_rf)
+
+show_best(fits_rf, metric = "accuracy")
+show_best(fits_rf, metric = "f_meas")
+show_best(fits_rf, metric = "roc_auc")
+```
+
+Time to collect the performance metrics. I used autoplots to complement the output from the `show_best()` commands. Out of all my RF model configurations, here are the best performance metrics:
+
+- Accuracy = 0.864 ± 0.002
+- F Measure = 0.787 ± 0.004
+- **auROC = 0.933 ± 0.002**
+
+This is better than both KNN and log, and seems like the algorithm to use!
+
+```{r}
+rf_best_params <- select_best(fits_rf, metric = "roc_auc")
+
+rec_prep3 <- rec_rf |> prep(data_trn)
+feat_trn3 <- rec_prep3 |> bake(data_trn)
+
+fit_rf <- fit(
+  object = rand_forest(
+    trees = 100,
+    mtry = rf_best_params$mtry,
+    min_n = rf_best_params$min_n
+  ) |>
+    set_engine(
+      "ranger",
+      respect.unordered.factors = "order",
+      importance = "impurity",
+      seed = 12345
+    ) |>
+    set_mode("classification"),
+  formula = satisfaction ~ .,
+  data = feat_trn3
+)
+```
+
+I selected the best RF hyperparameters based on ROC AUC, prepared the preprocessing recipe on the training data, and fit the final RF model. 
+
+### Selecting the Best Model Config
+
+#### 1. KNN
+```{r}
+feat_val_knn <- rec_prep1 |> bake(data_val)
+
+accuracy_vec(feat_val_knn$satisfaction, predict(fit_knn, feat_val_knn)$.pred_class)
+roc_auc_vec(fct_rev(feat_val_knn$satisfaction), predict(fit_knn, feat_val_knn, type = "prob")$.pred_satisfied)
+```
+
+I evaluated the best KNN model on the validation set using auROC metrics. I also decided to add accuracy for easier interpretation. The output, $auROC = 0.9, Accuracy = 0.778$, indicates that the model has a strong ability to distinguish different classes, and correctly predicted the class labels 77.8% of the time.
+
+#### 2. Log
+```{r}
+feat_val_log <- rec_prep2 |> bake(data_val)
+
+accuracy_vec(feat_val_log$satisfaction, predict(fit_log, feat_val_log)$.pred_class)
+roc_auc_vec(fct_rev(feat_val_log$satisfaction), predict(fit_log, feat_val_log, type = "prob")$.pred_satisfied)
+```
+
+I evaluated the best logistic model on the validation set using auROC metrics. I also decided to add accuracy for easier interpretation. The output, $auROC = 0.896, Accuracy = 0.811$, indicates that the model has a strong ability to distinguish different classes, and correctly predicted the class labels 81.1% of the time.
+
+Compared to the KNN model above, the log model has a slightly lower auROC (0.896 vs. 0.9), but higher accuracy (0.811 vs. 0.778). This indicates that the logistic model may be better at correctly classifying instances, making it the better model by my criteria.
+
+#### 3. Random Forest
+```{r}
+feat_val_rf <- rec_prep3 |> bake(data_val)
+
+accuracy_vec(feat_val_rf$satisfaction, predict(fit_rf, feat_val_rf)$.pred_class)
+roc_auc_vec(fct_rev(feat_val_rf$satisfaction), predict(fit_rf, feat_val_rf, type = "prob")$.pred_satisfied)
+```
+
+I evaluated the best RF model on the validation set using auROC metrics. I also decided to add accuracy for easier interpretation. The output, $auROC = 0.905, Accuracy = 0.844$, indicates that the model has a strong ability to distinguish different classes, and correctly predicted the class labels 84.4% of the time.
+
+**This is the best model by far, as it outperforms both KNN and log in auROC.** This is what I will use for the test set.
+
+#### Fitting the model on Train + Validation
+```{r}
+feat_train_val_rf <- rec_prep3 |> bake(data_train_val)
+
+best_fit_rf <- fit(
+  object = rand_forest(
+    trees = 100,
+    mtry = rf_best_params$mtry,
+    min_n = rf_best_params$min_n
+  ) |>
+    set_engine(
+      "ranger",
+      respect.unordered.factors = "order",
+      importance = "impurity",
+      seed = 12345
+    ) |>
+    set_mode("classification"),
+  formula = satisfaction ~ .,
+  data = feat_train_val_rf
+)
+```
+
+Before evaluating the model config on our test set, I decided to combine the training and validation data to fit the final RF model. By maximizing the data available, the model should have lower error rate (lower variance but unchanged bias), making it better at generalizing to unseen data.
+
+## Part 3. Evaluating Model Config on Test
+```{r}
+beepr::beep(3)
+
+feat_test <- rec_prep3 |> bake(data_test)
+
+accuracy_vec(feat_test$satisfaction, predict(best_fit_rf, feat_test)$.pred_class)
+roc_auc_vec(fct_rev(feat_test$satisfaction), predict(best_fit_rf, feat_test, type = "prob")$.pred_satisfied)
+```
+
+I evaluated the my best model on the held-out test set, and found that $auROC = 0.963, Accuracy = 0.907$. This indicates that the model has almost-perfect ability to distinguish between classes (satisfied vs. not satisfied), and correctly predicted the class labels 90.7% of the time.
+
+## Summary
+
+# Spending your data: How will you spend (i.e., divide/split) your data with respect to model fitting, model selection, and model evaluation? What factors did you weigh in your decision? What are the costs and benefits of the decision you made?
+
+To build a strong prediction model for airline passenger satisfaction, I began by first splitting the dataset into training+validation (75%) and test (25%) sets, then splitting the training+validation portion into a training set (80%) and a validation set (20%). All splits were stratified on the outcome variable to preserve class balance. This approach allowed me to tune and compare model configurations on validation data while reserving a truly untouched test set for final performance characterization. I chose to use bootstrap resampling within the training set to tune hyperparameters—bootstrapping provides stable performance estimates and reduces variance by averaging over multiple resampled datasets.
+
+In terms of model configurations, I evaluated three distinct algorithms: K-Nearest Neighbors (KNN), logistic regression, and random forest. These models span a spectrum of complexity and interpretability, from KNN’s non-parametric flexibility to logistic regression’s simplicity and interpretability, and random forest’s ensemble-based power. For each, I carefully prepared a preprocessing recipe tailored to the model’s needs (e.g. normalization for KNN,  regularization for logistic regression). Hyperparameters were tuned over grids using bootstraps, and the performance of each configuration was measured primarily using area under the ROC curve (auROC), with accuracy, F1 score, precision, and recall used as supporting metrics to help with interpretation.
+
+I selected auROC as the primary model selection criterion. This is because while the data was not imbalanced as per the definition we learned in class, it wasn’t perfectly balanced either, with minority class making up for ~33% of the dataset. More importantly, auROC captures the model’s ability to distinguish between classes across all classification thresholds - this is particularly useful in this case, where the costs of false positives (classifying a costumer as satisfied when they are not) and false negatives (classifying a costumer as unsatisfied when they are) are not equivalent. That said, I still included accuracy and other metrics for interpretability.
+
+After tuning, I compared the three model types judging by their performance in the validation set. Logistic regression slightly outperformed KNN in accuracy but also had a slightly lower auROC. Random forest emerged as the clear winner, achieving the highest scores in auROC. Before evaluating the random forest model on the test set, I refit it using the combined training and validation data to reduce variance and hopefully improve the model's performance in unseen data. This final model achieved excellent results on the test set ($auROC = 0.963, Accuracy = 0.907$), suggesting that it generalizes well and makes few classification errors. These performance metrics indicate a model with strong predictive power.
