@@ -1,178 +1,154 @@
-# Airline Passenger Satisfaction Prediction: R vs Python Implementation
+# Airline Satisfaction Prediction - Python Package
 
-## Project Overview
+This is a Python package for predicting airline passenger satisfaction using machine learning. It implements three different classification algorithms: K-Nearest Neighbors (KNN), Logistic Regression, and Random Forest.
 
-This project implements and compares machine learning approaches for predicting airline passenger satisfaction using both R and Python. It demonstrates how programming language choices and dataset sizes can affect model performance while maintaining consistent methodology across both implementations.
+## Project Structure
 
-## Dataset
-
-* **Source**: Airline Passenger Satisfaction Dataset (via Kaggle)
-* **Target Variable**: Binary satisfaction rating (satisfied vs. neutral/dissatisfied)
-* **Features**: \~20 predictor variables including:
-
-  * Customer demographics (age, gender, customer type)
-  * Service quality ratings (WiFi, food, cleanliness, etc.)
-  * Flight characteristics (distance, delays)
-  * Travel details (class, purpose)
-
-**Dataset Sizes**:
-
-* **R Implementation**: 600 observations (subset used for coursework)
-* **Python Implementation**: 100,000+ observations (full dataset)
-
-## Methodology
-
-### Model Selection Workflow
-
-1. **Preprocessing**: Variable reclassification, missing data imputation, and feature engineering
-2. **Data Splitting**: Nested train/validation/test approach with stratified sampling
-3. **Algorithms Compared**: K-Nearest Neighbors, Logistic Regression, Random Forest
-4. **Hyperparameter Tuning**: Grid search using cross-validation
-5. **Final Evaluation**: Test set performance assessment
-
-### Methodological Highlights
-
-* **Metric Selection**: auROC in R (for class imbalance); Accuracy in Python (due to class balance)
-* **Resampling Strategies**: Bootstrap in R vs. Stratified K-Fold Cross-Validation in Python
-* **Efficiency Considerations**: Strategic downsampling for hyperparameter tuning in Python
-
-## Results Summary
-
-| Implementation | Best Algorithm | Performance                 | Dataset Size |
-| -------------- | -------------- | --------------------------- | ------------ |
-| **R**          | Random Forest  | 96.3% auROC, 90.7% Accuracy | 600          |
-| **Python**     | Random Forest  | 96.5% Accuracy              | 100K+        |
-
-### Additional Model Results (Python)
-
-* **K-Nearest Neighbors**: 92.3% accuracy
-* **Logistic Regression**: 93.2% accuracy
-* **Random Forest**: 96.5% accuracy
-
-## Getting Started
-
-### Prerequisites
-
-#### R Packages
-
-```r
-library(tidyverse)
-library(tidymodels)
-library(xfun)
+```
+airline_satisfaction/
+├── __init__.py              # Package initialization
+├── main.py                  # Main execution script
+├── data/
+│   ├── __init__.py
+│   └── loader.py           # Data loading and preprocessing
+├── models/
+│   ├── __init__.py
+│   ├── preprocessors.py    # Preprocessing pipelines
+│   ├── trainers.py         # Model training logic
+│   └── evaluator.py        # Model evaluation
+├── utils/
+│   ├── __init__.py
+│   └── cache.py            # Caching utilities
+└── visualization/
+    ├── __init__.py
+    └── plots.py            # Visualization functions
 ```
 
-#### Python Packages
+## Installation
+
+### Option 1: Install from source
 
 ```bash
-pip install pandas numpy scikit-learn matplotlib seaborn xgboost kagglehub
-```
-
-### Setup Instructions
-
-1. **Clone the Repository**
-
-```bash
+# Clone the repository
 git clone https://github.com/yourusername/airline-satisfaction-prediction.git
 cd airline-satisfaction-prediction
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Install the package in development mode
+pip install -e .
 ```
 
-2. **Install R Dependencies**
-
-```r
-install.packages(c("tidyverse", "tidymodels", "xfun"))
-```
-
-3. **Install Python Dependencies**
+### Option 2: Install dependencies only
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Running the Analysis
+## Usage
 
-* **R**: Run `r_implementation.qmd` using RStudio or via `rmarkdown::render()`
-* **Python**: Open and run `python_implementation.ipynb` in Jupyter Notebook
+### Command Line
 
-## Repository Structure
+Run the complete pipeline:
 
-```
-├── README.md
-├── r_implementation.qmd                 # R implementation
-├── python_implementation.ipynb          # Python implementation
-├── data/
-│   ├── airline_passenger_satisfaction.csv
-│   └── processed/
-├── cache/                      # Cached model results
-├── graphs/                     # Generated visualizations
-└── requirements.txt            # Python dependency list
+```bash
+python airline_satisfaction/main.py
 ```
 
-## Visualizations
+Command line options:
 
-The project generates several plots and graphs:
+```bash
+python airline_satisfaction/main.py \
+    --data-path /path/to/data \
+    --cache-dir cache \
+    --output-dir graphs \
+    --no-cache
+```
 
-* Bar charts comparing algorithm performance
-* Confusion matrices to visualize classification results
-* ROC curves for evaluating model discriminative ability
-* Feature importance visualizations to identify satisfaction drivers
+Arguments:
+- `--data-path`: Path to data directory (default: downloads from Kaggle)
+- `--cache-dir`: Directory for caching models and predictions (default: 'cache')
+- `--output-dir`: Directory for saving visualizations (default: 'graphs')
+- `--no-cache`: Disable caching to retrain models from scratch
 
-## Insights
+### Python API
 
-### Technical Highlights
+Use the package components in your own scripts:
 
-* Random Forest consistently outperforms simpler models
-* Larger datasets improve model reliability and stability
-* Tailored preprocessing is essential for optimal performance
-* Ensemble models effectively capture nonlinear relationships
+```python
+from airline_satisfaction import DataLoader, ModelTrainer, ModelEvaluator, Visualizer
 
-### Business Implications
+# Load and prepare data
+loader = DataLoader()
+df, df_test = loader.load_data()
+loader.reclass_variables()
+X, y = loader.prepare_features_target()
 
-* In-flight service quality is the primary driver of satisfaction
-* Delays significantly impact perceived experience
-* Class and loyalty status affect satisfaction ratings
-* Predictive models can flag dissatisfied passengers early for intervention
+# Split data
+X_train, X_val, X_test, y_train, y_val, y_test, X_train_val, y_train_val = loader.split_data(X, y)
 
-## Implementation Differences
+# Create sample for faster training
+X_sample, y_sample = loader.create_sample(X_train, y_train)
 
-| Feature                 | R Implementation     | Python Implementation  |
-| ----------------------- | -------------------- | ---------------------- |
-| Dataset Size            | 600                  | 100,000+               |
-| Evaluation Metric       | auROC                | Accuracy               |
-| Resampling Strategy     | Bootstrap            | Stratified K-Fold      |
-| Preprocessing Framework | tidymodels `recipes` | scikit-learn pipelines |
-| Caching Method          | `xfun::cache_rds`    | `pickle`               |
-| Parallel Processing     | `doParallel`         | `n_jobs` parameter     |
+# Get column groups
+cat_cols, num_cols, rating_cols, _ = loader.get_column_groups()
 
-## Learning Outcomes
+# Train models
+trainer = ModelTrainer(cat_cols, num_cols, rating_cols)
 
-This project demonstrates:
+# Train Random Forest
+fits_rf = trainer.train_random_forest(X_sample, y_sample)
+print(f"Best params: {fits_rf.best_params_}")
+print(f"Best score: {fits_rf.best_score_}")
 
-* Cross-language implementation of ML pipelines
-* Scalable and reproducible preprocessing workflows
-* Effective model selection and evaluation strategies
-* Communication of technical insights and business relevance
+# Build pipeline with best params
+rf_pipeline = trainer.get_random_forest_pipeline()
+rf_pipeline.set_params(**fits_rf.best_params_)
+rf_pipeline.fit(X_train, y_train)
 
-## Contributing
+# Evaluate
+evaluator = ModelEvaluator()
+y_pred = rf_pipeline.predict(X_val)
+results = evaluator.evaluate_model('Random Forest', y_val, y_pred)
+evaluator.print_results('Random Forest')
 
-Contributions are welcome. You may suggest or add:
+# Visualize
+visualizer = Visualizer(output_dir='graphs')
+visualizer.plot_confusion_matrix(y_val, y_pred, loader.label_encoder.classes_)
+```
 
-* Additional machine learning models
-* Improved data visualizations
-* Alternative preprocessing techniques
-* Performance optimization strategies
+## Performance
+
+On the full airline satisfaction dataset (100K+ samples):
+
+| Model | Validation Accuracy | Test Accuracy |
+|-------|-------------------|---------------|
+| KNN | 92.3% | - |
+| Logistic Regression | 93.2% | - |
+| Random Forest | 96.1% | 96.5% |
+
+## Requirements
+
+- Python >= 3.8
+- pandas >= 1.5.0
+- numpy >= 1.23.0
+- matplotlib >= 3.6.0
+- seaborn >= 0.12.0
+- scikit-learn >= 1.2.0
+- xgboost >= 1.7.0
+- kagglehub >= 0.1.0
+
+## Output
+
+The pipeline generates:
+- Cached models in `cache/` directory
+- Visualization plots in `graphs/` directory:
+  - `model_accuracy_comparison.png`
+  - `confusion_matrix.png`
+  - `roc_curve.png`
+  - `feature_importance.png`
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for more details.
-
-## Contact
-
-* **Author**: Ho Wong
-* **Email**: howong112@outlook.com
-* **LinkedIn**: www.linkedin.com/in/ho-wong-1oo012
-
-## Acknowledgments
-
-* Original R implementation created for PSYC752 at University of Wisconsin-Madison
-* Dataset sourced from Kaggle’s Airline Passenger Satisfaction dataset
-* Inspired by the goal of comparing R and Python ML workflows for reproducibility and performance
+MIT License
